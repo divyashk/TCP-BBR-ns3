@@ -29,7 +29,7 @@ proc finish {} {
     $ns flush-trace
     close $tracefile1
     close $namfile1
-    #exec nam out.nam &
+    exec nam out.nam &
     exit 0
 }
 
@@ -39,7 +39,7 @@ proc finish {} {
 set n0 [$ns node]
 set n1 [$ns node]
 set n2 [$ns node]
-
+set n3 [$ns node]
 
 # Creating links between nodes 
 
@@ -47,6 +47,8 @@ $ns duplex-link $n0 $n1 2Mb 10ms DropTail
 
 # will act as our buffer
 $ns duplex-link $n1 $n2 1Mb 10ms DropTail
+
+$ns duplex-link $n2 $n3 2Mb 10ms DropTail
 
 
 # #positioning the nodes for consistency
@@ -64,7 +66,7 @@ if { $flavor == "Default" || $flavor == "Tahoe"} {
 set sink [new Agent/TCPSink]
 
 $ns attach-agent $n0 $tcp
-$ns attach-agent $n2 $sink
+$ns attach-agent $n3 $sink
 
 $ns connect $tcp $sink
 

@@ -1,5 +1,5 @@
-if { $argc != 6} {
-    puts stderr "Wrong number of input arguments- \nEnter arguments as $ns <filename> <flavour> <time> <queue limit> <number of source/sinks>  <total_input_bandwidth> <total_output_bandwidth>"
+if { $argc != 8} {
+    puts stderr "Wrong number of input arguments- \nEnter arguments as $ns <filename> <flavour> <time> <queue limit> <number of source/sinks>  <total_input_bandwidth> <bottleneck_bandwidth> <RTT>"
     exit 1
 } else {
     set flavor [lindex $argv 0]
@@ -7,23 +7,22 @@ if { $argc != 6} {
     set queueL [lindex $argv 2]
     set noOfSource [lindex $argv 3]
     set total_input_bandwidth [lindex $argv 4] 
-    set total_output_bandwidth [lindex $argv 5]
-
+    set bottleneck_bandwidth [lindex $argv 5]
+    set RTT [lindex $argv 6]
+    set recvWind [lindex $argv 7]
 }
-
-
 
 set ns [new Simulator]
 
 set tracefile1 [open out.tr w]
 $ns trace-all $tracefile1
 
-
 set namfile1 [open out.nam w]
 $ns namtrace-all $namfile1
 
-set incoming_link_bandwidth [expr $total_input_bandwidth/$noOfSource ]
-set outgoing_link_bandwidth [expr $total_output_bandwidth/$noOfSource ]
+set link_bandwidth [expr $total_input_bandwidth/$noOfSource ]
+
+set link_delay [ expr $RTT/4 ]
 
 
 proc finish {} {
@@ -38,6 +37,7 @@ proc finish {} {
 # Creating the router nodes
 set router_a [$ns node];
 set router_b [$ns node];
+
 
 
 # Creating the same of number of source and sink nodes and making their connections 
@@ -57,14 +57,19 @@ for {set i 0} { $i < $noOfSource } { incr i} {
     set ftp($i) [new Application/FTP]
     
     set source_arr($i) [$ns node];
-    $ns duplex-link $source_arr($i) $router_a "${incoming_link_bandwidth}Mb" 10ms DropTail
+    $ns duplex-link $source_arr($i) $router_a "${link_bandwidth}Mb" "${link_delay}ms" DropTail
     $ns duplex-link-op $source_arr($i) $router_a orient right
     $ns attach-agent $source_arr($i) $tcp_source($i)
-    # $tcp_source set packetSize_ 552
+
+    $tcp_source($i) set window_ $recvWind
+
+
+    $tcp_source($i) set packetSize_ 1500 
+
 
     
     set sink_arr($i) [$ns node];
-    $ns duplex-link $sink_arr($i) $router_b "${outgoing_link_bandwidth}Mb" 10ms DropTail
+    $ns duplex-link $sink_arr($i) $router_b "${link_bandwidth}Mb" "${link_delay}ms" DropTail
     $ns duplex-link-op $sink_arr($i) $router_b orient left
     $ns attach-agent $sink_arr($i) $tcp_sink($i)
 
@@ -73,17 +78,19 @@ for {set i 0} { $i < $noOfSource } { incr i} {
     $ftp($i) attach-agent $tcp_source($i)
 
     $tcp_source($i) set fid_ $i+1
+
 }
 
 
 # Creating link bettween router_a and router_b
-$ns duplex-link $router_a $router_b "${total_output_bandwidth}Mb" 10ms DropTail
+$ns simplex-link $router_a $router_b "${bottleneck_bandwidth}Mb" 1ms DropTail
+$ns simplex-link $router_b $router_a "${bottleneck_bandwidth}Mb" 1ms DropTail
 $ns queue-limit $router_a $router_b $queueL
 
 
 
 for {set i 0} { $i < $noOfSource } { incr i } {
-    $ns at [expr 1.0 + [expr 0.1 * $i]] "$ftp($i) start"
+    $ns at [expr 0.1 + [expr 0.1 * $i]] "$ftp($i) start"
     #$ns at 0.1 "$ftp($i) start"
     $ns at $time "$ftp($i) stop"
 }
@@ -102,6 +109,13 @@ proc plotWindow {tcpSource file} {
 for {set i 0} { $i < $noOfSource } { incr i} {
     $ns at 0.1 "plotWindow $tcp_source($i) $winfile($i)"
 }
+
+
+set units_file [open "inputs_with_units" w]
+puts $units_file [$tcp_source(0) set window_ ]
+puts $units_file [$tcp_source(0) set packetSize_ ]
+puts $units_file []
+
 
 $ns at $time+1 "finish"
 
