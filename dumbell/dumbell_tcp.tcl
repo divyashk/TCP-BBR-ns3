@@ -14,6 +14,18 @@ if { $argc != 8} {
 
 set ns [new Simulator]
 
+# set droptail_obj [ new Queue/DropTail ]
+
+# $droptail_obj set drop_front_ false
+# $droptail_obj set summarystats_ false
+# $droptail_obj set queue_in_bytes_ false
+# $droptail_obj set mean_pktsize_ 1500
+
+Queue/DropTail set drop_front_ false
+Queue/DropTail set summarystats_ false
+Queue/DropTail set queue_in_bytes_ false
+Queue/DropTail set mean_pktsize_ 1500
+
 set tracefile1 [open out.tr w]
 $ns trace-all $tracefile1
 
@@ -64,7 +76,7 @@ for {set i 0} { $i < $noOfSource } { incr i} {
     $tcp_source($i) set window_ $recvWind
 
 
-    $tcp_source($i) set packetSize_ 1500 
+    #$tcp_source($i) set packetSize_ 1500 
 
 
     
