@@ -1,5 +1,5 @@
 if { $argc != 8} {
-    puts stderr "Wrong number of input arguments- \nEnter arguments as $ns <filename> <flavour> <time> <queue limit> <number of source/sinks>  <total_input_bandwidth> <bottleneck_bandwidth> <RTT>"
+    puts stderr "Wrong number of input arguments- \nEnter arguments as $ns <filename> <flavour> <time> <queue limit> <number of source/sinks>  <total_input_bandwidth> <bottleneck_bandwidth> <RTT> <recvWindow>"
     exit 1
 } else {
     set flavor [lindex $argv 0]
@@ -34,8 +34,9 @@ $ns namtrace-all $namfile1
 
 set link_bandwidth [expr $total_input_bandwidth/$noOfSource ]
 
-set link_delay [ expr $RTT/4 ]
+# set link_delay [ expr $RTT/4 ]
 
+set link_queueL [expr 5000/$noOfSource]
 
 proc finish {} {
     global ns tracefile1 namfile1
@@ -50,11 +51,26 @@ proc finish {} {
 set router_a [$ns node];
 set router_b [$ns node];
 
+# Creating a random variable from a uniform distribution with mean RTT.
+set rand_s [new RNG]
+set run 1
+for {set j 1} {$j < $run} {incr j} {
+    $rand_s next-substream
+}
+set urand [new RandomVariable/Uniform]
+
+$urand set min_ 0
+$urand set max_ [expr 2*$RTT]
+$urand use-rng $rand_s
+
+# for verifying the random RTT values obtained.
+# set RTT_file [open "rtt_values" w]
+
 
 
 # Creating the same of number of source and sink nodes and making their connections 
 for {set i 0} { $i < $noOfSource } { incr i} {
-
+    
 
     set winfile($i) [open "tcp_${flavor}_${i}" w]
 
@@ -68,20 +84,28 @@ for {set i 0} { $i < $noOfSource } { incr i} {
 
     set ftp($i) [new Application/FTP]
     
-    set source_arr($i) [$ns node];
-    $ns duplex-link $source_arr($i) $router_a "${link_bandwidth}Mb" "${link_delay}ms" DropTail
+    set source_arr($i) [$ns node]
+
+    set random_RTT [expr round([$urand value])] 
+    #puts $RTT_file $random_RTT
+
+    set per_link_delay  [expr $random_RTT/4]
+    
+
+    $ns duplex-link $source_arr($i) $router_a "${link_bandwidth}Mb" "${per_link_delay}ms" DropTail
+    $ns queue-limit $source_arr($i) $router_a $link_queueL
+
     $ns duplex-link-op $source_arr($i) $router_a orient right
     $ns attach-agent $source_arr($i) $tcp_source($i)
 
     $tcp_source($i) set window_ $recvWind
 
-
     #$tcp_source($i) set packetSize_ 1500 
-
-
     
     set sink_arr($i) [$ns node];
-    $ns duplex-link $sink_arr($i) $router_b "${link_bandwidth}Mb" "${link_delay}ms" DropTail
+    $ns duplex-link $sink_arr($i) $router_b "${link_bandwidth}Mb" "${per_link_delay}ms" DropTail
+    $ns queue-limit $sink_arr($i) $router_b $link_queueL
+
     $ns duplex-link-op $sink_arr($i) $router_b orient left
     $ns attach-agent $sink_arr($i) $tcp_sink($i)
 
@@ -99,7 +123,9 @@ $ns simplex-link $router_a $router_b "${bottleneck_bandwidth}Mb" 1ms DropTail
 $ns simplex-link $router_b $router_a "${bottleneck_bandwidth}Mb" 1ms DropTail
 $ns queue-limit $router_a $router_b $queueL
 
-
+# Monitoring the queue between the routers
+set qmon [ $ns monitor-queue $router_a $router_b [ open bottleneck_monitor.tr w ] 0.1];
+[$ns link $router_a $router_b ] start-tracing
 
 for {set i 0} { $i < $noOfSource } { incr i } {
     $ns at [expr 0.1 + [expr 0.1 * $i]] "$ftp($i) start"
@@ -123,10 +149,10 @@ for {set i 0} { $i < $noOfSource } { incr i} {
 }
 
 
-set units_file [open "inputs_with_units" w]
-puts $units_file [$tcp_source(0) set window_ ]
-puts $units_file [$tcp_source(0) set packetSize_ ]
-puts $units_file []
+# set units_file [open "inputs_with_units" w]
+# puts $units_file [$tcp_source(0) set window_ ]
+# puts $units_file [$tcp_source(0) set packetSize_ ]
+# puts $units_file []
 
 
 $ns at $time+1 "finish"
