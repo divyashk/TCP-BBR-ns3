@@ -128,7 +128,7 @@ set qmon [ $ns monitor-queue $router_a $router_b [ open bottleneck_monitor.tr w 
 [$ns link $router_a $router_b ] start-tracing
 
 for {set i 0} { $i < $noOfSource } { incr i } {
-    $ns at [expr 0.1 + [expr 0.1 * $i]] "$ftp($i) start"
+    $ns at [expr 0.1] "$ftp($i) start"
     #$ns at 0.1 "$ftp($i) start"
     $ns at $time "$ftp($i) stop"
 }
