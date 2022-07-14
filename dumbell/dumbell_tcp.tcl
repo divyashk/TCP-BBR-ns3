@@ -125,7 +125,12 @@ $ns queue-limit $router_a $router_b $queueL
 
 # Monitoring the queue between the routers
 set qmon [ $ns monitor-queue $router_a $router_b [ open bottleneck_monitor.tr w ] 0.1];
-[$ns link $router_a $router_b ] start-tracing
+
+[$ns link $router_a $router_b ] queue-sample-timeout;
+
+set f_bottleneck_attr [open bottleneck_monitor_attr w];
+
+
 
 for {set i 0} { $i < $noOfSource } { incr i } {
     $ns at [expr 0.1] "$ftp($i) start"
@@ -135,17 +140,27 @@ for {set i 0} { $i < $noOfSource } { incr i } {
 
 # Creating a recursive procedure to plot the window size.
 
-proc plotWindow {tcpSource file} {
+proc plotWindow {tcpSource file qmon f_bottleneck_attr} {
     global ns
     set time 0.1
     set now [$ns now]
     set cwnd [$tcpSource set cwnd_]
     puts $file "$now $cwnd"
-    $ns at [expr $now+$time] "plotWindow $tcpSource $file"
+
+    # Bottleneck queue monitoring details
+    set parriv [$qmon set parrivals_]
+    set pdeparted [$qmon set pdepartures_]
+    set pdropped [$qmon set pdrops_]
+    set barrived [$qmon set barrivals_]
+    set bdeparted [$qmon set bdepartures_]
+    set bdropped [$qmon set bdrops_]    
+    
+    puts $f_bottleneck_attr "-time [format "%.1f" $now] -parriv $parriv -pdeparted $pdeparted -pdropped $pdropped -barrived $barrived -bdeparted $bdeparted -bdropped $bdropped"
+    $ns at [expr $now+$time] "plotWindow $tcpSource $file $qmon $f_bottleneck_attr"
 }
 
 for {set i 0} { $i < $noOfSource } { incr i} {
-    $ns at 0.1 "plotWindow $tcp_source($i) $winfile($i)"
+    $ns at 0.1 "plotWindow $tcp_source($i) $winfile($i) $qmon $f_bottleneck_attr"
 }
 
 
@@ -153,6 +168,7 @@ for {set i 0} { $i < $noOfSource } { incr i} {
 # puts $units_file [$tcp_source(0) set window_ ]
 # puts $units_file [$tcp_source(0) set packetSize_ ]
 # puts $units_file []
+
 
 
 $ns at $time+1 "finish"
