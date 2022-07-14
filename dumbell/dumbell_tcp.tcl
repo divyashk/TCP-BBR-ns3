@@ -154,8 +154,8 @@ proc plotWindow {tcpSource file qmon f_bottleneck_attr} {
     set barrived [$qmon set barrivals_]
     set bdeparted [$qmon set bdepartures_]
     set bdropped [$qmon set bdrops_]    
-    
-    puts $f_bottleneck_attr "-time [format "%.1f" $now] -parriv $parriv -pdeparted $pdeparted -pdropped $pdropped -barrived $barrived -bdeparted $bdeparted -bdropped $bdropped"
+    set qsize [expr $parriv-($pdeparted+$pdropped) ]
+    puts $f_bottleneck_attr "-time [format "%.1f" $now] -qsize $qsize -parriv $parriv -pdeparted $pdeparted -pdropped $pdropped -barrived $barrived -bdeparted $bdeparted -bdropped $bdropped"
     $ns at [expr $now+$time] "plotWindow $tcpSource $file $qmon $f_bottleneck_attr"
 }
 
