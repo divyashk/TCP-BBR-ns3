@@ -26,10 +26,13 @@ Queue/DropTail set summarystats_ false
 Queue/DropTail set queue_in_bytes_ false
 Queue/DropTail set mean_pktsize_ 1500
 
-set tracefile1 [open out.tr w]
+file mkdir "${flavor}_${noOfSource}_${RTT}"
+set root "./${flavor}_${noOfSource}_${RTT}"
+
+set tracefile1 [open "${root}/out.tr" w]
 $ns trace-all $tracefile1
 
-set namfile1 [open out.nam w]
+set namfile1 [open "${root}/out.nam" w]
 $ns namtrace-all $namfile1
 
 set link_bandwidth [expr $total_input_bandwidth/$noOfSource ]
@@ -39,11 +42,12 @@ set link_bandwidth [expr $total_input_bandwidth/$noOfSource ]
 set link_queueL [expr 5000/$noOfSource]
 
 proc finish {} {
+    global root
     global ns tracefile1 namfile1
     $ns flush-trace
     close $tracefile1
     close $namfile1
-    #exec nam out.nam &
+    #exec nam "${root}/out.nam" &
     exit 0
 }
 
@@ -64,7 +68,7 @@ $urand set max_ [expr 2*$RTT]
 $urand use-rng $rand_s
 
 # for verifying the random RTT values obtained.
-# set RTT_file [open "rtt_values" w]
+# set RTT_file [open "${root}/rtt_values" w]
 
 
 
@@ -72,7 +76,7 @@ $urand use-rng $rand_s
 for {set i 0} { $i < $noOfSource } { incr i} {
     
 
-    set winfile($i) [open "tcp_${flavor}_${i}" w]
+    set winfile($i) [open "${root}/tcp_${flavor}_${i}" w]
 
     if { $flavor == "Default" || $flavor == "Tahoe"} {
         set tcp_source($i) [new Agent/TCP]
@@ -124,11 +128,11 @@ $ns simplex-link $router_b $router_a "${bottleneck_bandwidth}Mb" 1ms DropTail
 $ns queue-limit $router_a $router_b $queueL
 
 # Monitoring the queue between the routers
-set qmon [ $ns monitor-queue $router_a $router_b [ open bottleneck_monitor.tr w ] 0.1];
+set qmon [ $ns monitor-queue $router_a $router_b [ open "${root}/bottleneck_monitor.tr" w ] 0.1];
 
 [$ns link $router_a $router_b ] queue-sample-timeout;
 
-set f_bottleneck_attr [open bottleneck_monitor_attr w];
+set f_bottleneck_attr [open "${root}/bottleneck_monitor_attr" w];
 
 
 
@@ -138,33 +142,52 @@ for {set i 0} { $i < $noOfSource } { incr i } {
     $ns at $time "$ftp($i) stop"
 }
 
-# Creating a recursive procedure to plot the window size.
+# Creating a recursive procedure to extract queue attrs
 
-proc plotWindow {tcpSource file qmon f_bottleneck_attr} {
+
+proc queueAttrRec {qmon f_bottleneck_attr bottleneck_bandwidth bdeparted_old} {
     global ns
-    set time 0.1
+    set time 1
     set now [$ns now]
-    set cwnd [$tcpSource set cwnd_]
-    puts $file "$now $cwnd"
-
     # Bottleneck queue monitoring details
     set parriv [$qmon set parrivals_]
     set pdeparted [$qmon set pdepartures_]
     set pdropped [$qmon set pdrops_]
     set barrived [$qmon set barrivals_]
     set bdeparted [$qmon set bdepartures_]
+    set bdeparted_change [expr $bdeparted-$bdeparted_old]
     set bdropped [$qmon set bdrops_]    
     set qsize [expr $parriv-($pdeparted+$pdropped) ]
-    puts $f_bottleneck_attr "-time [format "%.1f" $now] -qsize $qsize -parriv $parriv -pdeparted $pdeparted -pdropped $pdropped -barrived $barrived -bdeparted $bdeparted -bdropped $bdropped"
-    $ns at [expr $now+$time] "plotWindow $tcpSource $file $qmon $f_bottleneck_attr"
+    set quitilization [expr ((double($bdeparted_change*8))/(double($bottleneck_bandwidth*1024*1024))) * 100 ]
+    
+    puts $f_bottleneck_attr "-time [format "%.1f" $now] -qsize $qsize -parriv $parriv -pdeparted $pdeparted -pdropped $pdropped -barrived $barrived -bdeparted $bdeparted -bdropped $bdropped -qutilization [format "%.4f" $quitilization]"
+    
+
+    $ns at [expr $now+$time] "queueAttrRec $qmon $f_bottleneck_attr $bottleneck_bandwidth $bdeparted"
+}
+
+
+
+# Creating a recursive procedure to plot the window size.
+
+proc plotWindow { tcpSource file } {
+    global ns
+    set time 0.1
+    set now [$ns now]
+    set cwnd [$tcpSource set cwnd_]
+    puts $file "$now $cwnd"
+
+    $ns at [expr $now+$time] "plotWindow $tcpSource $file "
 }
 
 for {set i 0} { $i < $noOfSource } { incr i} {
-    $ns at 0.1 "plotWindow $tcp_source($i) $winfile($i) $qmon $f_bottleneck_attr"
+    $ns at 0.1 "plotWindow $tcp_source($i) $winfile($i)"
 }
 
+$ns at 0.1 "queueAttrRec $qmon $f_bottleneck_attr $bottleneck_bandwidth 0"
 
-# set units_file [open "inputs_with_units" w]
+
+# set units_file [open "${root}/inputs_with_units" w]
 # puts $units_file [$tcp_source(0) set window_ ]
 # puts $units_file [$tcp_source(0) set packetSize_ ]
 # puts $units_file []
