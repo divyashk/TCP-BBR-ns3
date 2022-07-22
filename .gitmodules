@@ -1,0 +1,3 @@
+[submodule "ns2_bbr"]
+	path = ns2_bbr
+	url = https://github.com/maesoser/ns2_bbr.git

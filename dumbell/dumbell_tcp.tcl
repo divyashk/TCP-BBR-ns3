@@ -47,7 +47,7 @@ proc finish {} {
     $ns flush-trace
     close $tracefile1
     close $namfile1
-    #exec nam "${root}/out.nam" &
+    exec nam "${root}/out.nam" &
     exit 0
 }
 
@@ -83,6 +83,7 @@ for {set i 0} { $i < $noOfSource } { incr i} {
     } else {
         set tcp_source($i) [new Agent/TCP/$flavor]
     }
+    
 
     set tcp_sink($i) [new Agent/TCPSink]
 
