@@ -112,10 +112,11 @@ MyApp::SendPacket(void)
 {
     Ptr<Packet> packet = Create<Packet> (m_packetSize);
     m_socket->Send(packet);
-
-    if ( ++m_packetsSent < m_nPackets ){
-        ScheduleTx();
-    }
+    ++m_packetsSent;
+    ScheduleTx();
+    // if ( ++m_packetsSent < m_nPackets ){
+    //     ScheduleTx();
+    // }
 }
 
 void
@@ -144,19 +145,19 @@ RxDrop(Ptr<OutputStreamWrapper> stream, Ptr<const Packet> p){
 int 
 main(int argc, char *argv[])
 {   
-    std::string bottleneckBandwidth = "5Mbps";
-    std::string bottleneckDelay = "5ms";
-    std::string accessBandwidth = "100Mbps";
-    std::string accessDelay = "0.1ms";
-    std::string sourceRate = "5Mbps";
+    std::string bottleneckBandwidth = "10Mbps";
+    std::string bottleneckDelay = "100us";
+    std::string accessBandwidth = "10Mbps";
+    std::string accessDelay = "100us";
+    std::string sourceRate = "2Mbps";
     std::string flavour = "TcpBic";
     std::string queueType = "DropTail";       //DropTail or CoDel
-    std::string queueSize = "1000p";      //in packets
-    uint32_t pktSize = 1458;        //in Bytes. 1458 to prevent fragments
-    uint32_t nPackets = 10000000;
+    std::string queueSize = "2p";      //in packets
+    uint32_t pktSize = 1400;        //in Bytes. 1458 to prevent fragments
+    uint32_t nPackets = 2000;
     float startTime = 0.1;
-    float simDuration = 60;        //in seconds
-    uint32_t nSources = 1;
+    float simDuration = 10;        //in seconds
+    uint32_t nSources = 5;
     bool isPcapEnabled = true;
     std::string pcapFileName = "pcapFileDropTail.pcap";
     std::string cwndTrFileName = "cwndDropTail.tr";
@@ -184,9 +185,11 @@ main(int argc, char *argv[])
    
     float stopTime = startTime + simDuration;
    
-    // std::string tcpModel ("ns3::"+flavour);
-
-    // Config::SetDefault ("ns3::TcpL4Protocol::SocketType", StringValue(tcpModel));
+    std::string tcpModel ("ns3::"+flavour);
+    Config::SetDefault ("ns3::TcpL4Protocol::SocketType", StringValue(tcpModel));
+    //Config::SetDefault("ns3::TcpSocket::SegmentSize", UintegerValue (1));
+    Config::SetDefault("ns3::TcpSocket::InitialCwnd", UintegerValue (1));
+    Config::SetDefault("ns3::TcpSocketBase::MaxWindowSize", UintegerValue (20*1000));
 
     // Defining the nodes 
     NodeContainer nodes;
@@ -204,6 +207,8 @@ main(int argc, char *argv[])
     PointToPointHelper p2p;
     p2p.SetDeviceAttribute ("DataRate", StringValue(accessBandwidth));
     p2p.SetChannelAttribute ("Delay", StringValue(accessDelay));
+    p2p.SetQueue ("ns3::DropTailQueue<Packet>", "MaxSize", QueueSizeValue (QueueSize (queueSize))); // p in 1000p stands for packets
+
 
     PointToPointHelper bottleneck;
     bottleneck.SetDeviceAttribute("DataRate", StringValue(bottleneckBandwidth));
@@ -309,6 +314,7 @@ main(int argc, char *argv[])
 
     AnimationInterface anim("tcp_n.xml");
     anim.SetMobilityPollInterval (Seconds (1));
+
     if ( nSources == 2){
           // // X (->) , Y(|) 
         // // source nodes
