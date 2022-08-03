@@ -14,6 +14,7 @@
 #include "ns3/flow-monitor-helper.h"
 #include "ns3/ipv4-global-routing-helper.h"
 #include "ns3/traffic-control-module.h"
+#include "ns3/flow-monitor-module.h"
 //#include "ns3/netanim-module.h"
 
 
@@ -22,51 +23,85 @@ using namespace ns3;
 NS_LOG_COMPONENT_DEFINE("TCPSCRIPT");
 
 static void
-plotCwndChange (Ptr<OutputStreamWrapper> stream,float_t &prev, uint32_t oldCwnd, uint32_t newCwnd){
+plotCwndChange (Ptr<OutputStreamWrapper> stream, uint32_t oldCwnd, uint32_t newCwnd){
     //NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "\t" << newCwnd);
-    // if ( Simulator::Now().GetSeconds()-prev > 0.1 ){
-    //     *stream->GetStream () << Simulator::Now().GetSeconds() << "\t" << newCwnd << std::endl;
-    //     prev += 0.1;
-    // }
     *stream->GetStream () << Simulator::Now().GetSeconds() << "\t" << newCwnd << std::endl;
 }
 
-// static void
-// RxDrop(Ptr<OutputStreamWrapper> stream,  Ptr<const Packet> p){
-//    *stream->GetStream () << "RxDrop at " << Simulator::Now().GetSeconds() << std::endl;
-// } 
-
 //Trace Congestion window length
 static void
-TraceCwnd (Ptr<OutputStreamWrapper> stream)
+TraceCwnd (uint32_t nSources, std::string cwndTrFileName)
 {
-    //Trace changes to the congestion window
-    float_t prev = Simulator::Now().GetSeconds();
-    Config::ConnectWithoutContext ("/NodeList/2/$ns3::TcpL4Protocol/SocketList/0/CongestionWindow", MakeBoundCallback (&plotCwndChange,stream, prev));
+    AsciiTraceHelper ascii[nSources];
+    Ptr<OutputStreamWrapper> stream[nSources];
+    for( uint32_t i = 0; i < nSources; i++){
+        stream[i] = ascii[i].CreateFileStream (cwndTrFileName+"_"+std::to_string(i)+".txt");
+        
+        //Trace changes to the congestion window
+        Config::ConnectWithoutContext ("/NodeList/"+std::to_string(i+2)+"/$ns3::TcpL4Protocol/SocketList/0/CongestionWindow", MakeBoundCallback (&plotCwndChange,stream[i]));
+
+    }
+}
+
+static void
+plotQsizeChange (Ptr<OutputStreamWrapper> stream, uint32_t oldCwnd, uint32_t newCwnd){
+    //NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "\t" << newCwnd);
+    *stream->GetStream () << Simulator::Now().GetSeconds() << "\t" << newCwnd << std::endl;
+    
+}
+
+static void
+RxDrop(Ptr<OutputStreamWrapper> stream,  Ptr<const Packet> p){
+    std::cout << "Packet Dropped (finally!)" << std::endl;
+   *stream->GetStream () << Simulator::Now().GetSeconds() << "\tRxDrop" << std::endl;
+} 
+
+static void
+TraceDroppedPacket(std::string droppedTrFileName){
+    // tracing all the dropped packets in a seperate file
+    AsciiTraceHelper ascii;
+    Ptr<OutputStreamWrapper> dropped_stream;
+    dropped_stream = ascii.CreateFileStream (droppedTrFileName + ".txt");
+    Config::ConnectWithoutContext("/NodeList/*/DeviceList/*/$ns3::PointToPointNetDevice/TxQueue/Drop", MakeBoundCallback(&RxDrop, dropped_stream));
+    Config::ConnectWithoutContext("/NodeList/*/DeviceList/*/$ns3::PointToPointNetDevice/TxQueue/DropAfterDequeue", MakeBoundCallback(&RxDrop, dropped_stream));
+    Config::ConnectWithoutContext("/NodeList/*/DeviceList/*/$ns3::PointToPointNetDevice/TxQueue/DropBeforeEnqueue", MakeBoundCallback(&RxDrop, dropped_stream));
+    Config::ConnectWithoutContext("/NodeList/*/DeviceList/*/$ns3::PointToPointNetDevice/PhyRxDrop", MakeBoundCallback(&RxDrop, dropped_stream));
+    Config::ConnectWithoutContext("/NodeList/*/DeviceList/*/$ns3::PointToPointNetDevice/PhyTxDrop", MakeBoundCallback(&RxDrop, dropped_stream));
+}
+
+static void
+TraceQueueSize(std::string qsizeTrFileName, std::string q_max_size){
+    AsciiTraceHelper ascii;
+    Ptr<OutputStreamWrapper> stream;
+    stream = ascii.CreateFileStream (qsizeTrFileName + ".txt");
+    *stream->GetStream() << q_max_size << std::endl;
+    Config::ConnectWithoutContext("/NodeList/0/DeviceList/0/$ns3::PointToPointNetDevice/TxQueue/PacketsInQueue", MakeBoundCallback(&plotQsizeChange, stream));
 }
 
 
 int 
 main(int argc, char *argv[])
 {   
-    std::string bottleneckBandwidth = "10Mbps";
-    std::string bottleneckDelay = "100us";
-    std::string accessBandwidth = "1Mbps";
-    std::string accessDelay = "10ms";
-    std::string sourceRate = "2Mbps";
-    std::string flavour = "TcpBic";
+    std::string bottleneckBandwidth = "100Mbps";
+    std::string bottleneckDelay = "1ms";
+    std::string accessBandwidth = "120Mbps";
+    std::string accessDelay = "2.5ms";
+    std::string sourceRate = "120Mbps";
+    std::string flavour = "TcpNewReno";
     std::string queueType = "DropTail";       //DropTail or CoDel
-    std::string queueSize = "2p";      //in packets
+    std::string queueSize = "2084p";      //in packets
     uint32_t pktSize = 1400;        //in Bytes. 1458 to prevent fragments
     uint32_t nPackets = 2000;
     uint32_t rcvBuff = 10000*pktSize;
     uint32_t sndBuff = 10000*pktSize;
     float startTime = 0;
     float simDuration = 10;        //in seconds
-    uint32_t nSources = 5;
-    bool isPcapEnabled = true;
-    std::string pcapFileName = "pcapFileDropTail.pcap";
-    std::string cwndTrFileName = "cwndDropTail.tr";
+    uint32_t cleanup_time = 2;
+    uint32_t nSources = 2;
+    std::string root_dir = "/mnt/Store/Project-summer/runtime/";
+    std::string qsizeTrFileName = root_dir+"qsizeTrace";
+    std::string cwndTrFileName = root_dir+"cwndDropTail";
+    std::string droppedTrFileName = root_dir+"droppedPacketTrace";
     bool logging = false;
  
     CommandLine cmd;
@@ -79,8 +114,6 @@ main(int argc, char *argv[])
     cmd.AddValue ("pktSize", "Packet size in bytes", pktSize); 
     cmd.AddValue ("startTime", "Simulation start time", startTime);
     cmd.AddValue ("simDuration", "Simulation duration in seconds", simDuration);
-    cmd.AddValue ("isPcapEnabled", "Flag to enable/disable pcap", isPcapEnabled);
-    cmd.AddValue ("pcapFileName", "Name of pcap file", pcapFileName);
     cmd.AddValue ("cwndTrFileName", "Name of cwnd trace file", cwndTrFileName);
     cmd.AddValue ("logging", "Flag to enable/disable logging", logging);
     cmd.AddValue ("flavour", "Flavour to be used like - TcpBic, TcpBbr etc.", flavour);
@@ -130,7 +163,7 @@ main(int argc, char *argv[])
     bottleneck.SetDeviceAttribute("DataRate", StringValue(bottleneckBandwidth));
     bottleneck.SetChannelAttribute("Delay", StringValue(bottleneckDelay));
     bottleneck.SetQueue ("ns3::DropTailQueue<Packet>", "MaxSize", QueueSizeValue (QueueSize (queueSize))); // p in 1000p stands for packets
-
+    
 
     // Consists of both the link and nodes
     NetDeviceContainer r1_r2 = bottleneck.Install(r1r2);
@@ -182,7 +215,7 @@ main(int argc, char *argv[])
     address.Assign(r1_r2);
 
 
-     
+
 
     // Attaching sink to nodes
     uint16_t sinkPort = 8080;
@@ -214,33 +247,28 @@ main(int argc, char *argv[])
         sourceApps->Start (Seconds (startTime));
         sourceApps->Stop (Seconds (stopTime));
     }
-
-    AsciiTraceHelper ascii;
-    Ptr<OutputStreamWrapper> stream = ascii.CreateFileStream ("cwnd_trace_file.txt");
-    // only tracing the cwnd for a single source i.e. source -> 0 ( node - 2).
-    Simulator::Schedule( Seconds(0.1), &TraceCwnd, stream);
-        
-    // for (uint32_t i = 0; i < nSources; i++)
-    // {
-    //     d_r2[i].Get (0)->TraceConnectWithoutContext ("PhyRxDrop", MakeBoundCallback (&RxDrop, stream));
-    // }
     
-    Simulator::Stop (Seconds (stopTime));
+    Simulator::Schedule( Seconds(0.1), &TraceCwnd, nSources, cwndTrFileName);
+    Simulator::Schedule( Seconds(0.1), &TraceQueueSize, qsizeTrFileName, queueSize);
+    
+    
+    Simulator::Schedule( Seconds(0.1), &TraceDroppedPacket, droppedTrFileName);
+    
+    
+    
+    Simulator::Stop (Seconds (stopTime+cleanup_time));
     Ipv4GlobalRoutingHelper::PopulateRoutingTables ();
 
     // AnimationInterface anim("tcp_ftp_n.xml");
     // anim.SetMobilityPollInterval (Seconds (1));
-
     // if ( nSources == 2){
     //       // // X (->) , Y(|) 
     //     // // source nodes
     //     anim.SetConstantPosition(nodes.Get(2), 10.0, 20.0);
     //     anim.SetConstantPosition(nodes.Get(3), 10.0, 40.0);
-
     //     // // // router nodes
     //     anim.SetConstantPosition(nodes.Get(0), 30.0, 30.0);
     //     anim.SetConstantPosition(nodes.Get(1), 50.0, 30.0);
-
     //     // // // sink nodes
     //     anim.SetConstantPosition(nodes.Get(4), 70.0, 20.0);
     //     anim.SetConstantPosition(nodes.Get(5), 70.0, 40.0);
