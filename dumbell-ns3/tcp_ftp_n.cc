@@ -17,6 +17,7 @@
 #include "ns3/flow-monitor-module.h"
 //#include "ns3/netanim-module.h"
 
+#define MAX_SOURCES 100;
 
 using namespace ns3;
 
@@ -106,7 +107,8 @@ main(int argc, char *argv[])
     float simDuration = 10;        //in seconds
     uint32_t cleanup_time = 2;
     uint32_t nSources = 2;
-   
+
+
     
     bool logging = false;
 
