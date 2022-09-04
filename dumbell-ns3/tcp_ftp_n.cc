@@ -28,6 +28,9 @@ std::vector<Ptr<OutputStreamWrapper>> cwnd_streams;
 uint64_t queueSize;
 Ptr<OutputStreamWrapper> qSize_stream;
 
+uint64_t bottleneckTransimitted;
+Ptr<OutputStreamWrapper> bottleneckTransimittedStream;
+
 static void
 plotCwndChange (uint32_t pos, uint32_t oldCwnd, uint32_t newCwnd){
     cwnd[pos] = newCwnd;
@@ -46,6 +49,7 @@ static void
 writeCwndToFile (uint32_t nSources)
 {
     for( uint32_t i = 0; i < nSources; i++){
+         
         *cwnd_streams[i]->GetStream () << Simulator::Now().GetSeconds() << "\t" << cwnd[i] << std::endl;
     }
 }
@@ -61,6 +65,11 @@ RxDrop(Ptr<OutputStreamWrapper> stream,  Ptr<const Packet> p){
    // std::cout << "Packet Dropped (finally!)" << std::endl;
    *stream->GetStream () << Simulator::Now().GetSeconds() << "\tRxDrop" << std::endl;
 } 
+
+static void
+TxPacket(Ptr<const Packet> p){
+    bottleneckTransimitted++;
+}
 
 static void
 TraceDroppedPacket(std::string droppedTrFileName){
@@ -82,8 +91,18 @@ TraceQueueSize(){
 }
 
 static void
+TraceBottleneckTx(){
+    *bottleneckTransimittedStream->GetStream() << Simulator::Now().GetSeconds() << "\t" << bottleneckTransimitted << std::endl;
+}
+
+static void
 StartTracingQueueSize(){
     Config::ConnectWithoutContext("/NodeList/0/DeviceList/0/$ns3::PointToPointNetDevice/TxQueue/PacketsInQueue", MakeCallback(&plotQsizeChange));
+}
+
+static void
+StartTracingTransmitedPacket(){
+    Config::ConnectWithoutContext("/NodeList/0/DeviceList/0/$ns3::PointToPointNetDevice/PhyTxEnd", MakeCallback(&TxPacket));
 }
 
 int 
@@ -116,7 +135,8 @@ main(int argc, char *argv[])
     std::string qsizeTrFileName;
     std::string cwndTrFileName;
     std::string droppedTrFileName;
- 
+    std::string bottleneckTxFileName;
+
     CommandLine cmd;
     cmd.AddValue ("bottleneckBandwidth", "Bottleneck bandwidth", bottleneckBandwidth);
     cmd.AddValue ("bottleneckDelay", "Bottleneck delay", bottleneckDelay);
@@ -143,6 +163,7 @@ main(int argc, char *argv[])
     qsizeTrFileName = root_dir + "qsizeTrace";
     cwndTrFileName = root_dir + "cwndDropTail";
     droppedTrFileName = root_dir + "droppedPacketTrace";
+    bottleneckTxFileName = root_dir + "bottleneckTx";
     
     cwnd.resize(nSources);
     cwnd_streams.resize(nSources);
@@ -278,6 +299,13 @@ main(int argc, char *argv[])
     Ptr<Socket> ns3TcpSocket[nSources];
     ApplicationContainer sourceApps[nSources];
 
+    double mean = 0.1;   // more like a ~ 0.06
+    double bound = 1;
+    Ptr<ExponentialRandomVariable> expRandomVariable = CreateObject<ExponentialRandomVariable> ();
+    expRandomVariable->SetAttribute ("Mean", DoubleValue (mean));
+    expRandomVariable->SetAttribute ("Bound", DoubleValue (bound));
+
+    double stime = startTime;
     // Configuring the application at each source node.
     for (uint32_t i = 0; i < nSources; i++)
     {
@@ -287,8 +315,14 @@ main(int argc, char *argv[])
         // Set the amount of data to send in bytes.  Zero is unlimited.
         tmp_source.SetAttribute ("MaxBytes", UintegerValue (0));
         sourceApps[i] = tmp_source.Install (nodes.Get (2+i));
-        sourceApps->Start (Seconds (startTime));
-        sourceApps->Stop (Seconds (stopTime));
+        
+        sourceApps[i].Start (Seconds (stime));
+        sourceApps[i].Stop (Seconds (stopTime));
+        double gap = expRandomVariable->GetValue();
+
+        stime += gap;
+        
+        // std::cout << gap << std::endl;
 
     }
     
@@ -303,21 +337,26 @@ main(int argc, char *argv[])
     qSize_stream = ascii_qsize.CreateFileStream(qsizeTrFileName+".txt");
 
 
+    // Configuring file stream to write the no of packets transmitted by the bottleneck
+    AsciiTraceHelper ascii_qsize_tx;
+    bottleneckTransimittedStream = ascii_qsize_tx.CreateFileStream(bottleneckTxFileName+".txt");
+    //std::cout << stime << std::endl;
     // start tracing the congestion window size and qSize
-    Simulator::Schedule( Seconds(startTime+2), &startTracingCwnd, nSources);
-    Simulator::Schedule( Seconds(startTime+2), &StartTracingQueueSize);
+    Simulator::Schedule( Seconds(stime), &startTracingCwnd, nSources);
+    Simulator::Schedule( Seconds(stime), &StartTracingQueueSize);
+    Simulator::Schedule( Seconds(stime), &StartTracingTransmitedPacket);
 
-
-    // writing the congestion windows size to files periodically ( 1 sec. )
-    for (uint32_t time = 2; time < stopTime; time++)
-    {
-        Simulator::Schedule( Seconds(startTime+time), &writeCwndToFile, nSources);
-        Simulator::Schedule( Seconds(startTime+time), &TraceQueueSize);
+    // writing the congestion windows size, queueSize, packetTx to files periodically ( 1 sec. )
+    for (uint32_t time = stime; time < stopTime; time++)
+    {   
+        Simulator::Schedule( Seconds(time), &writeCwndToFile, nSources);
+        Simulator::Schedule( Seconds(time), &TraceQueueSize);
+        Simulator::Schedule( Seconds(time), &TraceBottleneckTx);
     }
     
     // start tracing Queue Size and Dropped Files
 
-    Simulator::Schedule( Seconds(startTime+2), &TraceDroppedPacket, droppedTrFileName);
+    Simulator::Schedule( Seconds(stime), &TraceDroppedPacket, droppedTrFileName);
     
     if ( enbBotTrace == 1 ){
         AsciiTraceHelper bottleneck_ascii;
