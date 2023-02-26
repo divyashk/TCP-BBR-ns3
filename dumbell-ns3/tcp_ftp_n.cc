@@ -15,7 +15,9 @@
 #include "ns3/ipv4-global-routing-helper.h"
 #include "ns3/traffic-control-module.h"
 #include "ns3/flow-monitor-module.h"
-//#include "ns3/netanim-module.h"
+#include "ns3/config-store-module.h"
+#include "ns3/node.h"
+#include "ns3/netanim-module.h"
 
 #define MAX_SOURCES 100;
 
@@ -31,6 +33,8 @@ Ptr<OutputStreamWrapper> qSize_stream;
 uint64_t bottleneckTransimitted;
 Ptr<OutputStreamWrapper> bottleneckTransimittedStream;
 
+uint64_t droppedPackets;
+Ptr<OutputStreamWrapper> dropped_stream;
 static void
 plotCwndChange (uint32_t pos, uint32_t oldCwnd, uint32_t newCwnd){
     cwnd[pos] = newCwnd;
@@ -63,7 +67,8 @@ plotQsizeChange (uint32_t oldQSize, uint32_t newQSize){
 static void
 RxDrop(Ptr<OutputStreamWrapper> stream,  Ptr<const Packet> p){
    // std::cout << "Packet Dropped (finally!)" << std::endl;
-   *stream->GetStream () << Simulator::Now().GetSeconds() << "\tRxDrop" << std::endl;
+   //*stream->GetStream () << Simulator::Now().GetSeconds() << "\tRxDrop" << std::endl;
+   droppedPackets++;
 } 
 
 static void
@@ -74,9 +79,6 @@ TxPacket(Ptr<const Packet> p){
 static void
 TraceDroppedPacket(std::string droppedTrFileName){
     // tracing all the dropped packets in a seperate file
-    AsciiTraceHelper ascii;
-    Ptr<OutputStreamWrapper> dropped_stream;
-    dropped_stream = ascii.CreateFileStream (droppedTrFileName + ".txt");
     Config::ConnectWithoutContext("/NodeList/*/DeviceList/*/$ns3::PointToPointNetDevice/TxQueue/Drop", MakeBoundCallback(&RxDrop, dropped_stream));
     Config::ConnectWithoutContext("/NodeList/*/DeviceList/*/$ns3::PointToPointNetDevice/MacTxDrop", MakeBoundCallback(&RxDrop, dropped_stream));
     Config::ConnectWithoutContext("/NodeList/*/DeviceList/*/$ns3::PointToPointNetDevice/PhyRxDrop", MakeBoundCallback(&RxDrop, dropped_stream));
@@ -91,6 +93,11 @@ TraceQueueSize(){
 }
 
 static void
+TraceDroppedPkts(){
+    *dropped_stream->GetStream() << Simulator::Now().GetSeconds() << "\t" << droppedPackets << std::endl;
+}
+
+static void
 TraceBottleneckTx(){
     *bottleneckTransimittedStream->GetStream() << Simulator::Now().GetSeconds() << "\t" << bottleneckTransimitted << std::endl;
 }
@@ -102,31 +109,35 @@ StartTracingQueueSize(){
 
 static void
 StartTracingTransmitedPacket(){
+    bottleneckTransimitted = 0;
     Config::ConnectWithoutContext("/NodeList/0/DeviceList/0/$ns3::PointToPointNetDevice/PhyTxEnd", MakeCallback(&TxPacket));
 }
 
 int 
 main(int argc, char *argv[])
 {   
+    ConfigStore config;
+    config.ConfigureDefaults ();
+    config.ConfigureAttributes ();
+
     std::string bottleneckBandwidth = "100Mbps";
     std::string bottleneckDelay = "1ms";
     std::string accessBandwidth = "120Mbps";
     std::string accessDelay = "2.5ms";
-    std::string RTT = "10ms";   
+    std::string RTT = "98ms";   
     std::string sourceRate = "120Mbps";
-    std::string flavour = "TcpNewReno";
+    std::string flavour = "TcpBbr";
     std::string queueType = "DropTail";       //DropTail or CoDel
     std::string queueSize = "2084p";      //in packets
     uint32_t pktSize = 1400;        //in Bytes. 1458 to prevent fragments
     uint32_t nPackets = 2000;
-    uint32_t rcvBuff = 10000*pktSize;
-    uint32_t sndBuff = 10000*pktSize;
     uint32_t enbBotTrace = 0;
     float startTime = 0;
-    float simDuration = 10;        //in seconds
+    float simDuration = 200;        //in seconds
     uint32_t cleanup_time = 2;
-    uint32_t nSources = 2;
+    uint32_t nSources = 1;
 
+    droppedPackets = 0;
 
     
     bool logging = false;
@@ -154,8 +165,6 @@ main(int argc, char *argv[])
     cmd.AddValue ("nPackets", "No. of Packets to send", nPackets);
     cmd.AddValue ("nSources", "No. of sources in the dumbell topology", nSources);
     cmd.AddValue ("sourceRate", "Rate of generating packets at the application level", sourceRate);
-    cmd.AddValue ("rcvBuff", "Size of recieve buffer in Bytes", rcvBuff);
-    cmd.AddValue ("sndBuff", "Size of send buffer in Bytes", sndBuff);
     cmd.AddValue ("enableBottleneckTrace", "Tracing the bottleneck packets", enbBotTrace);
     cmd.Parse (argc, argv);
 
@@ -173,17 +182,19 @@ main(int argc, char *argv[])
     std::string tcpModel ("ns3::"+flavour);
     
     Config::SetDefault ("ns3::TcpL4Protocol::SocketType", StringValue(tcpModel));
-    Config::SetDefault("ns3::TcpSocket::SegmentSize", UintegerValue (1*pktSize));
-    Config::SetDefault("ns3::TcpSocket::InitialCwnd", UintegerValue (1));
-    //Config::SetDefault("ns3::TcpSocketBase::MaxWindowSize", UintegerValue (20*1000));
-    Config::SetDefault ("ns3::TcpSocket::SndBufSize", UintegerValue (sndBuff));
-    Config::SetDefault ("ns3::TcpSocket::RcvBufSize", UintegerValue (rcvBuff));
-    
+    // Configuring the packet size
+    Config::SetDefault("ns3::TcpSocket::SegmentSize", UintegerValue (pktSize));
 
+    //Config::SetDefault("ns3::TcpSocket::InitialCwnd", UintegerValue (1));
+    //Config::SetDefault("ns3::TcpSocketBase::MaxWindowSize", UintegerValue (20*1000));
+    
+    
     // Defining the nodes 
     NodeContainer nodes;
     nodes.Create (2+nSources*2);
+    // Source nodes
     NodeContainer sr1 [nSources];
+    // Destination nodes
     NodeContainer dr2 [nSources];
     NodeContainer r1r2 = NodeContainer(nodes.Get(0), nodes.Get(1));
     for( uint32_t i = 0; i< nSources ; i++){
@@ -215,12 +226,12 @@ main(int argc, char *argv[])
         std::string delay_str = std::to_string(delay) + "ms";
         p2p_s[i].SetDeviceAttribute ("DataRate", StringValue(accessBandwidth));
         p2p_s[i].SetChannelAttribute ("Delay", StringValue(delay_str));
-        p2p_s[i].SetQueue ("ns3::DropTailQueue<Packet>", "MaxSize", QueueSizeValue (QueueSize (std::to_string(5000/nSources)+"p"))); // p in 1000p stands for packets
+        p2p_s[i].SetQueue ("ns3::DropTailQueue<Packet>", "MaxSize", QueueSizeValue (QueueSize (std::to_string(0/nSources)+"p"))); // p in 1000p stands for packets
         p2p_s[i].DisableFlowControl();
-
+        
         p2p_d[i].SetDeviceAttribute ("DataRate", StringValue(accessBandwidth));
         p2p_d[i].SetChannelAttribute ("Delay", StringValue(delay_str));
-        p2p_d[i].SetQueue ("ns3::DropTailQueue<Packet>", "MaxSize", QueueSizeValue (QueueSize (std::to_string(5000/nSources)+"p"))); // p in 1000p stands for packets
+        p2p_d[i].SetQueue ("ns3::DropTailQueue<Packet>", "MaxSize", QueueSizeValue (QueueSize (std::to_string(0/nSources)+"p"))); // p in 1000p stands for packets
         p2p_d[i].DisableFlowControl();
     }
     
@@ -340,23 +351,25 @@ main(int argc, char *argv[])
     // Configuring file stream to write the no of packets transmitted by the bottleneck
     AsciiTraceHelper ascii_qsize_tx;
     bottleneckTransimittedStream = ascii_qsize_tx.CreateFileStream(bottleneckTxFileName+".txt");
+    AsciiTraceHelper ascii_dropped;
+    dropped_stream = ascii_dropped.CreateFileStream (droppedTrFileName + ".txt");
     //std::cout << stime << std::endl;
     // start tracing the congestion window size and qSize
     Simulator::Schedule( Seconds(stime), &startTracingCwnd, nSources);
     Simulator::Schedule( Seconds(stime), &StartTracingQueueSize);
     Simulator::Schedule( Seconds(stime), &StartTracingTransmitedPacket);
 
+    // start tracing Queue Size and Dropped Files
+    Simulator::Schedule( Seconds(stime), &TraceDroppedPacket, droppedTrFileName);
     // writing the congestion windows size, queueSize, packetTx to files periodically ( 1 sec. )
     for (uint32_t time = stime; time < stopTime; time++)
     {   
         Simulator::Schedule( Seconds(time), &writeCwndToFile, nSources);
         Simulator::Schedule( Seconds(time), &TraceQueueSize);
         Simulator::Schedule( Seconds(time), &TraceBottleneckTx);
+        Simulator::Schedule( Seconds(time), &TraceDroppedPkts);
     }
     
-    // start tracing Queue Size and Dropped Files
-
-    Simulator::Schedule( Seconds(stime), &TraceDroppedPacket, droppedTrFileName);
     
     if ( enbBotTrace == 1 ){
         AsciiTraceHelper bottleneck_ascii;
@@ -384,7 +397,7 @@ main(int argc, char *argv[])
     //     anim.SetConstantPosition(nodes.Get(4), 70.0, 20.0);
     //     anim.SetConstantPosition(nodes.Get(5), 70.0, 40.0);
     // }
-    // anim.SetMaxPktsPerTraceFile(50000000000);s
+    // anim.SetMaxPktsPerTraceFile(50000000000);
     
     
     
