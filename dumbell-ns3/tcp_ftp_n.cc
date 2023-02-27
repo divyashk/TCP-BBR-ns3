@@ -60,7 +60,7 @@ writeCwndToFile (uint32_t nSources)
 
 static void
 plotQsizeChange (uint32_t oldQSize, uint32_t newQSize){
-    //NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "\t" << newCwnd);
+    //NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "\t" << newCwnd);  
     queueSize = newQSize;
 }
 
@@ -185,7 +185,7 @@ main(int argc, char *argv[])
     // Configuring the packet size
     Config::SetDefault("ns3::TcpSocket::SegmentSize", UintegerValue (pktSize));
 
-    //Config::SetDefault("ns3::TcpSocket::InitialCwnd", UintegerValue (1));
+    Config::SetDefault("ns3::TcpSocket::InitialCwnd", UintegerValue (100));
     //Config::SetDefault("ns3::TcpSocketBase::MaxWindowSize", UintegerValue (20*1000));
     
     
@@ -235,8 +235,7 @@ main(int argc, char *argv[])
         p2p_d[i].DisableFlowControl();
     }
     
-
-    
+  
     
     
     // Consists of both the link and nodes
@@ -321,7 +320,7 @@ main(int argc, char *argv[])
     for (uint32_t i = 0; i < nSources; i++)
     {
         
-        BulkSendHelper tmp_source("ns3::TcpSocketFactory",InetSocketAddress (ip_d_r2[i].GetAddress (0), sinkPort));
+        BulkSendHelper tmp_source("ns3::TcpSocketFactory",sinkAddress[i]);
            
         // Set the amount of data to send in bytes.  Zero is unlimited.
         tmp_source.SetAttribute ("MaxBytes", UintegerValue (0));
@@ -399,9 +398,31 @@ main(int argc, char *argv[])
     // }
     // anim.SetMaxPktsPerTraceFile(50000000000);
     
+        
+    // Enable flow monitor
+    Ptr<FlowMonitor> monitor;
+    FlowMonitorHelper flowHelper;
+    monitor = flowHelper.InstallAll();
     
     
     Simulator::Run ();
+
+     // Print the statistics for each flow
+    monitor->CheckForLostPackets();
+    FlowMonitor::FlowStatsContainer stats = monitor->GetFlowStats();
+    for (auto it = stats.begin(); it != stats.end(); ++it) {
+        Ipv4FlowClassifier classifier;
+        FlowId flowId = it->first;
+
+        uint64_t txBytes = it->second.txBytes;
+        uint64_t rxBytes = it->second.rxBytes;
+        double throughput = (rxBytes * 8.0) / (it->second.timeLastRxPacket.GetSeconds() - it->second.timeFirstTxPacket.GetSeconds()) / 1000000.0;
+
+
+        std::cout << "  Tx bytes = " << txBytes << std::endl;
+        std::cout << "  Rx bytes = " << rxBytes << std::endl;
+        std::cout << "  Throughput = " << throughput << " Mbps."<< std::endl;
+    }
 
     Simulator::Destroy ();
 
