@@ -27,8 +27,8 @@ NS_LOG_COMPONENT_DEFINE("TCPSCRIPT");
 
 std::vector<uint32_t> cwnd;
 std::vector<Ptr<OutputStreamWrapper>> cwnd_streams;
-uint64_t queueSize;
-Ptr<OutputStreamWrapper> qSize_stream;
+uint64_t queueSize[3];
+Ptr<OutputStreamWrapper> qSize_stream[3];
 
 uint64_t bottleneckTransimitted;
 Ptr<OutputStreamWrapper> bottleneckTransimittedStream;
@@ -60,13 +60,6 @@ writeCwndToFile (uint32_t nSources)
 }
 
 static void
-plotQsizeChange (uint32_t oldQSize, uint32_t newQSize){
-    //NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "\t" << newCwnd);
-    
-    queueSize = newQSize;
-}
-
-static void
 RxDrop(Ptr<OutputStreamWrapper> stream,  Ptr<const Packet> p){
    // std::cout << "Packet Dropped (finally!)" << std::endl;
    //*stream->GetStream () << Simulator::Now().GetSeconds() << "\tRxDrop" << std::endl;
@@ -90,8 +83,33 @@ TraceDroppedPacket(std::string droppedTrFileName){
 }
 
 static void
-TraceQueueSize(){
-    *qSize_stream->GetStream() << Simulator::Now().GetSeconds() << "\t" << queueSize << std::endl;
+plotQsizeChange (int index, uint32_t oldQSize, uint32_t newQSize){
+    // NS_LOG_UNCOND("Queue: "<< index << "\t" << newQSize);
+    queueSize[index] = newQSize;    
+    
+    // log in the file after every change( will increase the run time and computation )
+    *qSize_stream[index]->GetStream() << Simulator::Now().GetSeconds() << "\t" << queueSize[index] << std::endl;
+}
+
+static void
+TraceQueueSizeA(){
+    *qSize_stream[0]->GetStream() << Simulator::Now().GetSeconds() << "\t" << queueSize[0] << std::endl;
+}
+
+static void
+TraceQueueSizeB(){
+    *qSize_stream[1]->GetStream() << Simulator::Now().GetSeconds() << "\t" << queueSize[1] << std::endl;
+}
+
+static void
+TraceQueueSizeC(){
+    *qSize_stream[2]->GetStream() << Simulator::Now().GetSeconds() << "\t" << queueSize[2] << std::endl;
+}
+
+static void
+StartTracingQueueSize(){
+    for(int i = 0; i<3; i++)
+        Config::ConnectWithoutContext("/NodeList/"+std::to_string(i*2)+"/DeviceList/0/$ns3::PointToPointNetDevice/TxQueue/PacketsInQueue", MakeBoundCallback(&plotQsizeChange, i));
 }
 
 static void
@@ -104,10 +122,7 @@ TraceBottleneckTx(){
     *bottleneckTransimittedStream->GetStream() << Simulator::Now().GetSeconds() << "\t" << bottleneckTransimitted << std::endl;
 }
 
-static void
-StartTracingQueueSize(){
-    Config::ConnectWithoutContext("/NodeList/0/DeviceList/0/$ns3::PointToPointNetDevice/TxQueue/PacketsInQueue", MakeCallback(&plotQsizeChange));
-}
+
 
 static void
 StartTracingTransmitedPacket(){
@@ -159,7 +174,7 @@ main(int argc, char *argv[])
     bool logging = false;
 
     std::string root_dir;
-    std::string qsizeTrFileName;
+    std::string qsizeTrFileName[3];
     std::string cwndTrFileName;
     std::string droppedTrFileName;
     std::string bottleneckTxFileName;
@@ -187,7 +202,11 @@ main(int argc, char *argv[])
     cmd.Parse (argc, argv);
 
     root_dir = "/mnt/Store/Project-summer/runtime/"+flavour+"/"+RTT+"/"+std::to_string(nSources)+"/";
-    qsizeTrFileName = root_dir + "qsizeTrace";
+
+
+    for (int i = 0; i<3 ; i++)
+        qsizeTrFileName[i] = root_dir + "qsizeTrace_" + std::to_string(i);
+
     cwndTrFileName = root_dir + "cwndDropTail";
     droppedTrFileName = root_dir + "droppedPacketTrace";
     bottleneckTxFileName = root_dir + "bottleneckTx";
@@ -274,13 +293,13 @@ main(int argc, char *argv[])
     PointToPointHelper merge_ac;
     merge_ac.SetDeviceAttribute("DataRate", StringValue(mergeBandwidthAC));
     merge_ac.SetChannelAttribute("Delay", StringValue(bottleneckDelay));
-    merge_ac.SetQueue ("ns3::DropTailQueue<Packet>", "MaxSize", QueueSizeValue (QueueSize (queueSize))); // p in 1000p stands for packets
+    merge_ac.SetQueue ("ns3::DropTailQueue<Packet>", "MaxSize", QueueSizeValue (QueueSize (std::to_string(0)+"p"))); // p in 1000p stands for packets
     merge_ac.DisableFlowControl();
 
     PointToPointHelper merge_bc;
     merge_bc.SetDeviceAttribute("DataRate", StringValue(mergeBandwidthBC));
     merge_bc.SetChannelAttribute("Delay", StringValue(bottleneckDelay));
-    merge_bc.SetQueue ("ns3::DropTailQueue<Packet>", "MaxSize", QueueSizeValue (QueueSize (queueSize))); // p in 1000p stands for packets
+    merge_bc.SetQueue ("ns3::DropTailQueue<Packet>", "MaxSize", QueueSizeValue (QueueSize (std::to_string(0)+"p"))); // p in 1000p stands for packets
     merge_bc.DisableFlowControl();
 
     PointToPointHelper p2p_sa[nSources/2];
@@ -465,13 +484,15 @@ main(int argc, char *argv[])
     }
     
     // Configuring file stream to write the Qsize
-    AsciiTraceHelper ascii_qsize;
-    qSize_stream = ascii_qsize.CreateFileStream(qsizeTrFileName+".txt");
+    AsciiTraceHelper ascii_qsize[3];
+
+    for(int i = 0; i<3 ; i++)
+        qSize_stream[i] = ascii_qsize[i].CreateFileStream(qsizeTrFileName[i]+".txt");
 
 
     // Configuring file stream to write the no of packets transmitted by the bottleneck
-    AsciiTraceHelper ascii_qsize_tx;
-    bottleneckTransimittedStream = ascii_qsize_tx.CreateFileStream(bottleneckTxFileName+".txt");
+    AsciiTraceHelper ascii_tx;
+    bottleneckTransimittedStream = ascii_tx.CreateFileStream(bottleneckTxFileName+".txt");
 
 
     AsciiTraceHelper ascii_dropped;
@@ -492,7 +513,11 @@ main(int argc, char *argv[])
     for (uint32_t time = stime; time < stopTime; time++)
     {   
         Simulator::Schedule( Seconds(time), &writeCwndToFile, nSources);
-        Simulator::Schedule( Seconds(time), &TraceQueueSize);
+
+        Simulator::Schedule( Seconds(time), &TraceQueueSizeA);
+        Simulator::Schedule( Seconds(time), &TraceQueueSizeB);
+        Simulator::Schedule( Seconds(time), &TraceQueueSizeC);
+
         Simulator::Schedule( Seconds(time), &TraceBottleneckTx);
         Simulator::Schedule( Seconds(time), &TraceDroppedPkts);
     }
@@ -512,26 +537,26 @@ main(int argc, char *argv[])
 
 
 
-    AnimationInterface anim("tcp_ftp_n_bg.xml");
-    if ( nSources == 2){
-          // // X (->) , Y(|) 
+    // AnimationInterface anim("tcp_ftp_n_bg.xml");
+    // if ( nSources == 2){
+    //       // // X (->) , Y(|) 
 
-        anim.SetConstantPosition(nodes.Get(6), 0.5, 15.0);
-        anim.SetConstantPosition(nodes.Get(7), 0.5, 55.0); 
+    //     anim.SetConstantPosition(nodes.Get(6), 0.5, 15.0);
+    //     anim.SetConstantPosition(nodes.Get(7), 0.5, 55.0); 
        
-        anim.SetConstantPosition(nodes.Get(0), 11.0, 20.0);
-        anim.SetConstantPosition(nodes.Get(1), 18.0, 20.0);
+    //     anim.SetConstantPosition(nodes.Get(0), 11.0, 20.0);
+    //     anim.SetConstantPosition(nodes.Get(1), 18.0, 20.0);
         
-        anim.SetConstantPosition(nodes.Get(2), 11.0, 45.0);
-        anim.SetConstantPosition(nodes.Get(3), 18.0, 45.0);
+    //     anim.SetConstantPosition(nodes.Get(2), 11.0, 45.0);
+    //     anim.SetConstantPosition(nodes.Get(3), 18.0, 45.0);
         
-        anim.SetConstantPosition(nodes.Get(4), 30.0, 31.0);
-        anim.SetConstantPosition(nodes.Get(5), 43.0, 31.0);
+    //     anim.SetConstantPosition(nodes.Get(4), 30.0, 31.0);
+    //     anim.SetConstantPosition(nodes.Get(5), 43.0, 31.0);
 
-        anim.SetConstantPosition(nodes.Get(8), 62.0, 16.0);
-        anim.SetConstantPosition(nodes.Get(9), 60.0, 41.0);
-    }
-    anim.SetMaxPktsPerTraceFile(50000000000);
+    //     anim.SetConstantPosition(nodes.Get(8), 62.0, 16.0);
+    //     anim.SetConstantPosition(nodes.Get(9), 60.0, 41.0);
+    // }
+    // anim.SetMaxPktsPerTraceFile(50000000000);
     
         
     // Enable flow monitor
