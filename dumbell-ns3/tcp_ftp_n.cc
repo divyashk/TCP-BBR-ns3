@@ -412,7 +412,7 @@ main(int argc, char *argv[])
     FlowMonitor::FlowStatsContainer stats = monitor->GetFlowStats();
     for (auto it = stats.begin(); it != stats.end(); ++it) {
         Ipv4FlowClassifier classifier;
-        FlowId flowId = it->first;
+      
 
         uint64_t txBytes = it->second.txBytes;
         uint64_t rxBytes = it->second.rxBytes;
