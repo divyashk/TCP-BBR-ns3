@@ -1,4 +1,5 @@
 #include <iostream>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include "ns3/core-module.h"
@@ -22,11 +23,11 @@
 #define MAX_SOURCES 100;
 
 using namespace ns3;
-
 NS_LOG_COMPONENT_DEFINE("TCPSCRIPT");
 
-std::vector<uint32_t> cwnd;
-std::vector<Ptr<OutputStreamWrapper>> cwnd_streams;
+std::vector<std::vector<uint32_t>> cwndData; // 2-D array to store cwnd values
+Ptr<OutputStreamWrapper> cwnd_stream;
+
 uint64_t queueSize[3];
 Ptr<OutputStreamWrapper> qSize_stream[3];
 
@@ -36,13 +37,19 @@ Ptr<OutputStreamWrapper> bottleneckTransimittedStream;
 uint64_t droppedPackets;
 Ptr<OutputStreamWrapper> dropped_stream;
 
+std::vector<uint64_t> totalBytes;
+std::vector<std::vector<double>> throughputvstime;
+Ptr<OutputStreamWrapper> throughputvstime_stream;
+
 static void
 plotCwndChange (uint32_t pos, uint32_t oldCwnd, uint32_t newCwnd){
-    cwnd[pos] = newCwnd;
+    cwndData[pos][Simulator::Now().GetSeconds()] = newCwnd;
 }
 
 static void  
-startTracingCwnd(uint32_t nSources){
+startTracingCwnd(uint32_t nSources, uint32_t simDurationInSeconds){
+    cwndData.resize(nSources, std::vector<uint32_t>(simDurationInSeconds, 0));
+
     for( uint32_t i = 0; i < nSources; i++){
         //Trace changes to the congestion window
         Config::ConnectWithoutContext ("/NodeList/"+std::to_string(i+6)+"/$ns3::TcpL4Protocol/SocketList/0/CongestionWindow", MakeBoundCallback (&plotCwndChange, i));
@@ -51,13 +58,26 @@ startTracingCwnd(uint32_t nSources){
 
 //Trace Congestion window length
 static void
-writeCwndToFile (uint32_t nSources)
-{
-    for( uint32_t i = 0; i < nSources; i++){
-         
-        *cwnd_streams[i]->GetStream () << Simulator::Now().GetSeconds() << "\t" << cwnd[i] << std::endl;
+writeCwndToFile (uint32_t nSources, uint32_t simDurationInSeconds)
+{   
+    // Write header: sourceId t0 t1 t2 ... tN
+    *cwnd_stream->GetStream ()  << "SourceID\t";
+    for (uint32_t t = 0; t <= simDurationInSeconds; ++t) {
+        *cwnd_stream->GetStream ()  << t << "\t";
+    }
+    *cwnd_stream->GetStream ()  << "\n";
+
+    // Write cwnd values for each source
+    for (uint32_t i = 0; i < nSources; ++i) {
+        *cwnd_stream->GetStream ()  << i << "\t";
+        for (uint32_t t = 0; t <= simDurationInSeconds; ++t) {
+            *cwnd_stream->GetStream ()  << cwndData[i][t] << "\t";
+        }
+        *cwnd_stream->GetStream ()  << "\n";
     }
 }
+
+
 
 static void
 RxDrop(Ptr<OutputStreamWrapper> stream,  Ptr<const Packet> p){
@@ -138,6 +158,63 @@ int getDelay(std::string Delay){
     return stoi(Delay.substr(0, Delay.length()-2));
 }
 
+
+//Store Throughput for bottleneck to file
+static void
+writeThroughputToFile (uint32_t simDurationInSeconds)
+{   
+    // Write header: RouterID t0 t1 t2 ... tN
+    *throughputvstime_stream->GetStream ()  << "RouterID\t";
+    for (uint32_t t = 0; t <= simDurationInSeconds; ++t) {
+        *throughputvstime_stream->GetStream ()  << t << "\t";
+    }
+    *throughputvstime_stream->GetStream ()  << "\n";
+
+    // Write throughput values for each router
+    for (uint32_t i = 0; i < 3; ++i) {
+        *throughputvstime_stream->GetStream ()  << i << "\t";
+        for (uint32_t t = 0; t <= simDurationInSeconds; ++t) {
+            *throughputvstime_stream->GetStream ()  << throughputvstime[i][t] << "\t";
+        }
+        *throughputvstime_stream->GetStream ()  << "\n";
+    }
+}
+
+void bottleneckTxCallback(uint64_t router, Ptr<const Packet> p){
+    totalBytes[router] += p->GetSize();
+}
+
+// This is called every second
+void ThroughputCallback() {
+    static Time lastTime = Simulator::Now();
+
+    Time currentTime = Simulator::Now();
+    Time timeDiff = currentTime - lastTime;
+    for (int i = 0; i<3 ;i++)
+        throughputvstime[i][Simulator::Now().GetSeconds()] = ((totalBytes[i]) / timeDiff.GetSeconds())/1024/1024; // in MBps
+
+    //Reset the size of the transmitted packets
+    totalBytes[0] = 0;
+    totalBytes[1] = 0;
+    totalBytes[2] = 0;
+
+    lastTime = currentTime;
+}
+
+
+
+static void  
+startTracingThroughput(uint32_t simDurationInSeconds){
+    throughputvstime.resize(3, std::vector<double>(simDurationInSeconds));
+
+    //Trace changes to the throughput(tx) window only on the bottlenecks
+    Config::ConnectWithoutContext ("/NodeList/1/DeviceList/0/PhyTxEnd", MakeBoundCallback (&bottleneckTxCallback, 0));
+    Config::ConnectWithoutContext ("/NodeList/3/DeviceList/0/PhyTxEnd", MakeBoundCallback (&bottleneckTxCallback, 1));
+    Config::ConnectWithoutContext ("/NodeList/5/DeviceList/0/PhyTxEnd", MakeBoundCallback (&bottleneckTxCallback, 2));
+}
+
+
+
 int 
 main(int argc, char *argv[])
 {   
@@ -149,7 +226,8 @@ main(int argc, char *argv[])
     std::string bottleneckDelay = "1ms";
     std::string accessBandwidth = "120Mbps";
     std::string accessDelay = "2.5ms";
-    std::string RTT = "98ms";   
+    std::string RTT1 = "10ms";   
+    std::string RTT2 = "10ms";   
     std::string sourceRate = "120Mbps";
     std::string flavour = "TcpBbr";
     std::string queueType = "DropTail";       //DropTail or CoDel
@@ -157,7 +235,7 @@ main(int argc, char *argv[])
 
     std::string bottleneckBandwidthA = "100Mbps";
     std::string bottleneckBandwidthB = "100Mbps";
-    std::string bottleneckBandwidthC = "200Mbps";
+    std::string bottleneckBandwidthC = "180Mbps";
 
     uint32_t pktSize = 1400;        //in Bytes. 1458 to prevent fragments
     uint32_t nPackets = 2000;
@@ -166,7 +244,7 @@ main(int argc, char *argv[])
     float startTime = 0;
     float simDuration = 200;        //in seconds
     uint32_t cleanup_time = 2;
-    uint32_t nSources = 2;
+    uint32_t nSources = 80;
 
     droppedPackets = 0;
 
@@ -178,6 +256,9 @@ main(int argc, char *argv[])
     std::string cwndTrFileName;
     std::string droppedTrFileName;
     std::string bottleneckTxFileName;
+    std::string throughputFileName;
+
+    totalBytes.resize(3, 0);
 
     CommandLine cmd;
     cmd.AddValue ("bottleneckBandwidthA", "Bottleneck bandwidth A", bottleneckBandwidth);
@@ -185,14 +266,15 @@ main(int argc, char *argv[])
     cmd.AddValue ("bottleneckBandwidthC", "Bottleneck bandwidth C", bottleneckBandwidth);
     cmd.AddValue ("bottleneckDelay", "Bottleneck delay", bottleneckDelay);
     cmd.AddValue ("accessBandwidth", "Access link bandwidth", accessBandwidth);
-    cmd.AddValue ("RTT", "mean RTT for random generation of delays in each link", RTT);
+    cmd.AddValue ("RTT1", "mean RTT for random generation of delays in each link", RTT1);
+    cmd.AddValue ("RTT2", "mean RTT for random generation of delays in each link", RTT2);
     cmd.AddValue ("accessDelay", "Access link delay", accessDelay);
     cmd.AddValue ("queueType", "Queue type: DropTail, CoDel", queueType);
     cmd.AddValue ("queueSize", "Queue size in packets", queueSize);
     cmd.AddValue ("pktSize", "Packet size in bytes", pktSize); 
     cmd.AddValue ("startTime", "Simulation start time", startTime);
     cmd.AddValue ("simDuration", "Simulation duration in seconds", simDuration);
-    cmd.AddValue ("cwndTrFileName", "Name of cwnd trace file", cwndTrFileName);
+    cmd.AddValue ("cwndFileName", "Name of cwnd trace file", cwndTrFileName);
     cmd.AddValue ("logging", "Flag to enable/disable logging", logging);
     cmd.AddValue ("flavour", "Flavour to be used like - TcpBic, TcpBbr etc.", flavour);
     cmd.AddValue ("nPackets", "No. of Packets to send", nPackets);
@@ -201,8 +283,14 @@ main(int argc, char *argv[])
     cmd.AddValue ("enableBottleneckTrace", "Tracing the bottleneck packets", enbBotTrace);
     cmd.Parse (argc, argv);
 
-    root_dir = "/mnt/Store/Project-summer/runtime/"+flavour+"/"+RTT+"/"+std::to_string(nSources)+"/";
-
+    root_dir = "/mnt/Store/Project-summer/runtime/"+flavour+"/"+RTT1+RTT2+"/"+std::to_string(nSources)+"/";
+    // if (!std::filesystem::exists(root_dir)){
+    //     std::filesystem::create_directory(root_dir);
+    // }
+    // else{
+    //     for (const auto& entry : std::filesystem::directory_iterator(root_dir)) 
+    //         remove(entry.path());
+    // }
 
     for (int i = 0; i<3 ; i++)
         qsizeTrFileName[i] = root_dir + "qsizeTrace_" + std::to_string(i);
@@ -210,9 +298,9 @@ main(int argc, char *argv[])
     cwndTrFileName = root_dir + "cwndDropTail";
     droppedTrFileName = root_dir + "droppedPacketTrace";
     bottleneckTxFileName = root_dir + "bottleneckTx";
+    throughputFileName = root_dir + "throughput";
 
-    cwnd.resize(nSources);
-    cwnd_streams.resize(nSources);
+    throughputvstime.resize(3, std::vector<double>(simDuration));
 
     float stopTime = startTime + simDuration;
    
@@ -265,12 +353,19 @@ main(int argc, char *argv[])
    
 
     // Defining the links to be used between nodes
-    double min = 0.0;
-    double max = double(2*stoi(RTT.substr(0, RTT.length()-2)));
+    double min1 = 0.0;
+    double max1 = double(2*stoi(RTT1.substr(0, RTT1.length()-2)));
     
-    Ptr<UniformRandomVariable> x = CreateObject<UniformRandomVariable> ();
-    x->SetAttribute ("Min", DoubleValue (min));
-    x->SetAttribute ("Max", DoubleValue (max));
+    Ptr<UniformRandomVariable> x1 = CreateObject<UniformRandomVariable> ();
+    x1->SetAttribute ("Min", DoubleValue (min1));
+    x1->SetAttribute ("Max", DoubleValue (max1));
+
+    double min2 = 0.0;
+    double max2 = double(2*stoi(RTT2.substr(0, RTT2.length()-2)));
+    
+    Ptr<UniformRandomVariable> x2 = CreateObject<UniformRandomVariable> ();
+    x2->SetAttribute ("Min", DoubleValue (min2));
+    x2->SetAttribute ("Max", DoubleValue (max2));
 
     PointToPointHelper bottleneck_a;
     bottleneck_a.SetDeviceAttribute("DataRate", StringValue(bottleneckBandwidthA));
@@ -311,30 +406,36 @@ main(int argc, char *argv[])
 
     for (uint32_t i = 0; i < nSources; i++)
     {
-        double delay = (x->GetValue())/2;
-        //std::cout << delay*2 << std::endl;
-        std::string total_delay_str = std::to_string(delay) + "ms";
-        std::string delay_per_access_link = std::to_string((delay-4*getDelay(bottleneckDelay))/6) + "ms";
+        
 
         if ( i <= nSources/2-1 ){
+            double delay1 = (x1->GetValue());
+            std::string delay_per_access_link = std::to_string((delay1-4*getDelay(bottleneckDelay))/6) + "ms";
             p2p_sa[a_pos].SetDeviceAttribute ("DataRate", StringValue(accessBandwidth));
             p2p_sa[a_pos].SetChannelAttribute ("Delay", StringValue(delay_per_access_link));
             p2p_sa[a_pos].SetQueue ("ns3::DropTailQueue<Packet>", "MaxSize", QueueSizeValue (QueueSize (std::to_string(0)+"p"))); // p in 1000p stands for packets
             p2p_sa[a_pos].DisableFlowControl();
             a_pos++;
+            p2p_d[i].SetDeviceAttribute ("DataRate", StringValue(accessBandwidth));
+            p2p_d[i].SetChannelAttribute ("Delay", StringValue(delay_per_access_link));
+            p2p_d[i].SetQueue ("ns3::DropTailQueue<Packet>", "MaxSize", QueueSizeValue (QueueSize (std::to_string(0/nSources)+"p"))); // p in 1000p stands for packets
+            p2p_d[i].DisableFlowControl();
         }
         else{
+            double delay2 = (x2->GetValue());
+            std::string delay_per_access_link = std::to_string((delay2-4*getDelay(bottleneckDelay))/6) + "ms";
             p2p_sb[b_pos].SetDeviceAttribute ("DataRate", StringValue(accessBandwidth));
             p2p_sb[b_pos].SetChannelAttribute ("Delay", StringValue(delay_per_access_link));
             p2p_sb[b_pos].SetQueue ("ns3::DropTailQueue<Packet>", "MaxSize", QueueSizeValue (QueueSize (std::to_string(0)+"p"))); // p in 1000p stands for packets
             p2p_sb[b_pos].DisableFlowControl();
             b_pos++;
+            p2p_d[i].SetDeviceAttribute ("DataRate", StringValue(accessBandwidth));
+            p2p_d[i].SetChannelAttribute ("Delay", StringValue(delay_per_access_link));
+            p2p_d[i].SetQueue ("ns3::DropTailQueue<Packet>", "MaxSize", QueueSizeValue (QueueSize (std::to_string(0/nSources)+"p"))); // p in 1000p stands for packets
+            p2p_d[i].DisableFlowControl();
         }
         
-        p2p_d[i].SetDeviceAttribute ("DataRate", StringValue(accessBandwidth));
-        p2p_d[i].SetChannelAttribute ("Delay", StringValue(delay_per_access_link));
-        p2p_d[i].SetQueue ("ns3::DropTailQueue<Packet>", "MaxSize", QueueSizeValue (QueueSize (std::to_string(0/nSources)+"p"))); // p in 1000p stands for packets
-        p2p_d[i].DisableFlowControl();
+        
     }
     
   
@@ -400,8 +501,8 @@ main(int argc, char *argv[])
     for (uint32_t i = 0; i < nSources; i++)
     {   
         
-        std::string ip = "10.1."+std::to_string(i+6)+".0";
-        address.SetBase(ip.c_str(), "255.255.255.0");
+        std::string ip = "10."+std::to_string(i+6)+".0.0";
+        address.SetBase(ip.c_str(), "255.255.0.0");
 
         if ( i <= nSources/2-1 ){
             ip_s_ra1[a_pos] = address.Assign(NDC_s_ra1[a_pos]);
@@ -411,24 +512,24 @@ main(int argc, char *argv[])
             ip_s_rb1[b_pos] = address.Assign(NDC_s_rb1[b_pos]);
             b_pos++;
         }
-        std::string ip2 = "10.1."+std::to_string(i+6+nSources)+".0";
-        address.SetBase(ip2.c_str(), "255.255.255.0");
+        std::string ip2 = "10."+std::to_string(i+6+nSources)+".0.0";
+        address.SetBase(ip2.c_str(), "255.255.0.0");
         ip_d_rc2[i] = address.Assign(NDC_d_rc2[i]);
     }
     
-    address.SetBase("10.1.1.0","255.255.255.0");
+    address.SetBase("10.1.0.0","255.255.0.0");
     address.Assign(NDC_ra1_ra2);
     
-    address.SetBase("10.1.2.0","255.255.255.0");
+    address.SetBase("10.2.0.0","255.255.0.0");
     address.Assign(NDC_rb1_rb2);
     
-    address.SetBase("10.1.3.0","255.255.255.0");
+    address.SetBase("10.3.0.0","255.255.0.0");
     address.Assign(NDC_rc1_rc2);
 
-    address.SetBase("10.1.4.0","255.255.255.0");
+    address.SetBase("10.4.0.0","255.255.0.0");
     address.Assign(NDC_rb2_rc1);
 
-    address.SetBase("10.1.5.0","255.255.255.0");
+    address.SetBase("10.5.0.0","255.255.0.0");
     address.Assign(NDC_ra2_rc1);
 
 
@@ -478,10 +579,12 @@ main(int argc, char *argv[])
     }
     
     // Configuring file streams to write the congestion windows sizes to.
-    AsciiTraceHelper ascii[nSources];
-    for( uint32_t i = 0; i < nSources; i++){
-        cwnd_streams[i] = ascii[i].CreateFileStream (cwndTrFileName+"_"+std::to_string(i)+".txt");
-    }
+    AsciiTraceHelper ascii;
+    cwnd_stream = ascii.CreateFileStream (cwndTrFileName+".txt");
+    
+    // Configuring file streams to write the throughput
+    AsciiTraceHelper ascii_th;
+    throughputvstime_stream = ascii_th.CreateFileStream (throughputFileName+".txt");
     
     // Configuring file stream to write the Qsize
     AsciiTraceHelper ascii_qsize[3];
@@ -500,7 +603,8 @@ main(int argc, char *argv[])
 
     //std::cout << stime << std::endl;
     // start tracing the congestion window size and qSize
-    Simulator::Schedule( Seconds(stime), &startTracingCwnd, nSources);
+    Simulator::Schedule( Seconds(stime), &startTracingCwnd, nSources, simDuration);
+    Simulator::Schedule( Seconds(stime), &startTracingThroughput, simDuration);
     Simulator::Schedule( Seconds(stime), &StartTracingQueueSize);
     Simulator::Schedule( Seconds(stime), &StartTracingTransmitedPacket);
 
@@ -509,18 +613,19 @@ main(int argc, char *argv[])
     Simulator::Schedule( Seconds(stime), &TraceDroppedPacket, droppedTrFileName);
     
 
-    // writing the congestion windows size, queueSize, packetTx to files periodically ( 1 sec. )
+    // writing queueSize, packetTx to files periodically ( 1 sec. ) 
     for (uint32_t time = stime; time < stopTime; time++)
     {   
-        Simulator::Schedule( Seconds(time), &writeCwndToFile, nSources);
-
         Simulator::Schedule( Seconds(time), &TraceQueueSizeA);
         Simulator::Schedule( Seconds(time), &TraceQueueSizeB);
         Simulator::Schedule( Seconds(time), &TraceQueueSizeC);
 
         Simulator::Schedule( Seconds(time), &TraceBottleneckTx);
         Simulator::Schedule( Seconds(time), &TraceDroppedPkts);
+        Simulator::Schedule( Seconds(time), &ThroughputCallback);
     }
+
+
     
     
     if ( enbBotTrace == 1 ){
@@ -534,7 +639,7 @@ main(int argc, char *argv[])
 
     Simulator::Stop (Seconds (stopTime+cleanup_time));
     Ipv4GlobalRoutingHelper::PopulateRoutingTables ();
-
+    
 
 
     // AnimationInterface anim("tcp_ftp_n_bg.xml");
@@ -559,31 +664,31 @@ main(int argc, char *argv[])
     // anim.SetMaxPktsPerTraceFile(50000000000);
     
         
-    // Enable flow monitor
-    Ptr<FlowMonitor> monitor;
-    FlowMonitorHelper flowHelper;
-    monitor = flowHelper.InstallAll();
-    
+    // // Enable flow monitor
+    // Ptr<FlowMonitor> flowMonitor;
+    // FlowMonitorHelper flowHelper;
+    // flowMonitor = flowHelper.InstallAll();
     
     Simulator::Run ();
 
-     // Print the statistics for each flow
-    monitor->CheckForLostPackets();
-    FlowMonitor::FlowStatsContainer stats = monitor->GetFlowStats();
-    for (auto it = stats.begin(); it != stats.end(); ++it) {
-        Ipv4FlowClassifier classifier;
-        
-        uint64_t txBytes = it->second.txBytes;
-        uint64_t rxBytes = it->second.rxBytes;
-        double throughput = (rxBytes * 8.0) / (it->second.timeLastRxPacket.GetSeconds() - it->second.timeFirstTxPacket.GetSeconds()) / 1000000.0;
+    // // Get flow statistics
+    // flowMonitor->CheckForLostPackets();
+    // Ptr<Ipv4FlowClassifier> classifier = DynamicCast<Ipv4FlowClassifier>(flowHelper.GetClassifier());
+    // FlowMonitor::FlowStatsContainer stats = flowMonitor->GetFlowStats();
+
+    // // Iterate through flows and print throughput for the point-to-point device
+    // for (std::map<FlowId, FlowMonitor::FlowStats>::const_iterator i = stats.begin(); i != stats.end(); ++i) {
+    //     Ipv4FlowClassifier::FiveTuple t = classifier->FindFlow(i->first);
+    //     std::cout << "Flow " << i->first << " (" << t.sourceAddress << " -> " << t.destinationAddress << "): "
+    //             << i->second.rxBytes * 8.0 / (i->second.timeLastRxPacket.GetSeconds() - i->second.timeFirstTxPacket.GetSeconds()) / 1024 / 1024  << " Mbps\n";
+    // }
 
 
-        std::cout << "  Tx bytes = " << txBytes << std::endl;
-        std::cout << "  Rx bytes = " << rxBytes << std::endl;
-        std::cout << "  Throughput = " << throughput << " Mbps."<< std::endl;
-    }
 
     Simulator::Destroy ();
+
+    writeCwndToFile(nSources, simDuration);
+    writeThroughputToFile(simDuration);
 
     return 0;
 
